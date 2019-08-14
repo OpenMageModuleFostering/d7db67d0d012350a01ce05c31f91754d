@@ -2,7 +2,7 @@
 <config>
     <modules>
         <DB1_AnyMarket>
-            <version>2.10.1</version>
+            <version>2.12.1</version>
         </DB1_AnyMarket>
     </modules>
     <global>
@@ -85,6 +85,9 @@
                     <anymarketbrands>
                         <table>db1_anymarket_anymarketbrands</table>
                     </anymarketbrands>
+                    <anymarketimage>
+                        <table>db1_anymarket_anymarketimage</table>
+                    </anymarketimage>
                     <anymarketlog_store>
                         <table>db1_anymarket_anymarketlog_store</table>
                     </anymarketlog_store>
@@ -121,17 +124,6 @@
                     </db1_anymarket>
                 </observers>
             </admin_system_config_changed_section_anymarket_section>
-
-            <sales_order_save_commit_after>
-                <observers>
-                    <sales_order_save_commit_after_handler>
-                        <type>model</type>
-                        <class>db1_anymarket/observer</class>
-                        <method>updateOrderAnyMarketObs</method>
-                        <args></args>
-                    </sales_order_save_commit_after_handler>
-                </observers>
-            </sales_order_save_commit_after>
 
             <!-- CATEGORIA -->
             <catalog_category_save_commit_after>
@@ -185,14 +177,26 @@
             </catalog_product_delete_after>
 
             <!-- ORDER -->
-            <sales_order_save_after>
+            <checkout_onepage_controller_success_action>
                 <observers>
-                    <db1_anymarket>
+                    <sales_order_save_commit_after_handler>
+                        <class>db1_anymarket/observer</class>
+                        <method>sendOrderAnyMarketObs</method>
+                    </sales_order_save_commit_after_handler>
+                </observers>
+            </checkout_onepage_controller_success_action>
+
+            <!-- ORDER UPDATE -->
+            <sales_order_save_commit_after>
+                <observers>
+                    <sales_order_save_commit_after_handler>
+                        <type>model</type>
                         <class>db1_anymarket/observer</class>
                         <method>updateOrderAnyMarketObs</method>
-                    </db1_anymarket>
+                        <args></args>
+                    </sales_order_save_commit_after_handler>
                 </observers>
-            </sales_order_save_after>
+            </sales_order_save_commit_after>
 
             <!-- ESTOQUE -->
             <cataloginventory_stock_item_save_commit_after>
@@ -240,8 +244,15 @@
                 </observers>
             </sales_order_creditmemo_save_after>
 
+            <sales_order_shipment_save_before>
+                <observers>
+                    <db1_anymarket>
+                        <class>db1_anymarket/observer</class>
+                        <method>saveShippingObs</method>
+                    </db1_anymarket>
+                </observers>
+            </sales_order_shipment_save_before>
         </events>
-
     </global>
    <default>
       <queue_qty>
@@ -270,6 +281,11 @@
         <anymarket_integration_order_group>
             <anymarket_type_order_sync_field>1</anymarket_type_order_sync_field>
         </anymarket_integration_order_group>
+
+        <anymarket_general_group>
+            <anymarket_operation_type_field>0</anymarket_operation_type_field>
+            <anymarket_operation_type_imp_field>0</anymarket_operation_type_imp_field>
+        </anymarket_general_group>
 
         <anymarket_attribute_group>
             <anymarket_customer_group_field>1</anymarket_customer_group_field>
@@ -322,12 +338,15 @@
                 <schedule><cron_expr>*/15 * * * *</cron_expr></schedule>  <!-- 15 min -->
                 <run><model>db1_anymarket/cron::executeQueue</model></run>
             </db1_anymarket_execqueue>
+            <db1_anymarket_execorderwitherror>
+                <schedule><cron_expr>*/5 * * * *</cron_expr></schedule>  <!-- 5 min -->
+                <run><model>db1_anymarket/cron::sincOrdersWithErrors</model></run>
+            </db1_anymarket_execorderwitherror>
         </jobs>
     </crontab>
 <!-- CRON -->
 
     <adminhtml>
-
         <layout>
             <updates>
                 <db1_anymarket>

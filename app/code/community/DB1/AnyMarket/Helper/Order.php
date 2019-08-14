@@ -9,7 +9,7 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
      * @param $OrderRowData
      * @return string
      */
-    private function getStatusAnyMarketToMageOrderConfig($storeID, $OrderRowData){
+    public function getStatusAnyMarketToMageOrderConfig($storeID, $OrderRowData){
         if($OrderRowData == null){
             $OrderRowData = "new";
         }
@@ -25,7 +25,6 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
                         $OrderReturn = $StatusOrderRow['orderStatusMG'];
                         $statuses = Mage::getModel('sales/order_status')->getCollection()->joinStates()
                             ->addFieldToFilter('main_table.status',array('eq'=>$OrderReturn));
-                        //->addStatusFilter($OrderReturn);
 
                         $StateReturn = $statuses->getFirstItem()->getData('state');
                         break;
@@ -68,6 +67,78 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
         if( $descError != "" ) {
             Mage::getSingleton('adminhtml/session')->addError($descError);
         }
+    }
+
+    /**
+     * get estimated date from order comment
+     *
+     * @param $Order
+     * @return string
+     */
+    public function getEstimatedDateFromOrder( $Order ){
+        $estimatedDate = "";
+        foreach ($Order->getStatusHistoryCollection() as $item) {
+            $CommentCurr = $item->getComment();
+
+            $CommentCurr = str_replace(array("<br>"), "<br/>", $CommentCurr );
+            $iniEstimatedDate = strpos($CommentCurr, 'Entrega esperada para:');
+            if( $iniEstimatedDate !== false ) {
+                $estimatedDate = substr( $CommentCurr, $iniEstimatedDate+27, 19);
+                break;
+            }
+
+        }
+        return $estimatedDate;
+    }
+
+    /**
+     * get delivered date from order comment
+     *
+     * @param $Order
+     * @return string
+     */
+    public function getDeliveredDateFromOrder( $Order ){
+        $delivedDate = null;
+        foreach ($Order->getStatusHistoryCollection() as $item) {
+            $CommentCurr = strtolower($item->getComment());
+
+            $iniDelivedDate = strpos($CommentCurr, 'data de entrega:');
+            if( $iniDelivedDate !== false ) {
+                $delivedDate = substr( $CommentCurr, $iniDelivedDate+16, 19);
+                break;
+            }
+        }
+        return $delivedDate;
+    }
+
+    /**
+     * get estimated date from order comment
+     *
+     * @param $shipping
+     * @return string
+     */
+    public function getDatesFromShipping( $shipping ){
+        $estimatedDate = "";
+        $shippedDate = "";
+        foreach ($shipping->getCommentsCollection() as $item) {
+            $CommentCurr = strtolower($item->getComment());
+
+            $iniEstimatedDate = strpos($CommentCurr, 'data estimada de entrega:');
+            if ($iniEstimatedDate !== false) {
+                $estimatedDate = substr($CommentCurr, $iniEstimatedDate+30, 19);
+            }
+
+            $iniShippedDate = strpos($CommentCurr, 'data de entrega na transportadora:');
+            if ($iniShippedDate !== false) {
+                $shippedDate = substr($CommentCurr, $iniShippedDate + 39, 19);
+            }
+
+        }
+
+
+        $shippedDate   = ($shippedDate != "")   ? $this->formatDateTimeZone( str_replace("/", "-", $shippedDate ) )   : "";
+        $estimatedDate = ($estimatedDate != "") ? $this->formatDateTimeZone( str_replace("/", "-", $estimatedDate ) ) : "";
+        return array($estimatedDate, $shippedDate);
     }
 
     /**
@@ -223,10 +294,12 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
 
                     $this->getSpecificOrderFromAnyMarket($order->id, $order->token, $storeID);
 
-                    $paramFeed = array(
-                        "token" => $order->token
-                    );
-                    $this->CallAPICurl("PUT", $HOST . "/rest/api/v2/orders/feeds/" . $order->id, $headers, $paramFeed);
+                    if($order->token != 'notoken') {
+                        $paramFeed = array(
+                            "token" => $order->token
+                        );
+                        $this->CallAPICurl("PUT", $HOST . "/rest/api/v2/orders/feeds/" . $order->id, $headers, $paramFeed);
+                    }
                 }
             }
         }
@@ -255,316 +328,312 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             $IDOrderAnyMarket = $OrderJSON->marketPlaceId;
             $anymarketordersSpec = Mage::getModel('db1_anymarket/anymarketorders');
             $anymarketordersSpec->load($idSeqAnyMarket, 'nmo_id_seq_anymarket');
-
+            $OrderIDMage = '';
 
             if( ($anymarketordersSpec->getData('nmo_id_anymarket') == null) ||
                 ($anymarketordersSpec->getData('nmo_status_int') == "Não integrado (AnyMarket)") ||
                 ($anymarketordersSpec->getData('nmo_status_int') == "ERROR 01") ){
-                $STATUSIMPORT = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_stauts_order_field', $storeID);
-                if (strpos($STATUSIMPORT, $OrderJSON->status) !== false) {
-                    $ConfigOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
-                    if($ConfigOrder == 1) {
-                        $statsConfig = $this->getStatusAnyMarketToMageOrderConfig($storeID, $OrderJSON->status);
-                        $statusMage = $statsConfig["status"];
 
-                        if (strpos($statusMage, 'ERROR:') === false) {
-                            //TRATA OS PRODUTOS
-                            $_products = array();
-                            $shippingDesc = array();
-                            foreach ($OrderJSON->items as $item) {
+                $ConfigOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
+                if($ConfigOrder == 1) {
+                    $statsConfig = $this->getStatusAnyMarketToMageOrderConfig($storeID, $OrderJSON->status);
+                    $statusMage = $statsConfig["status"];
 
-                                if( isset($item->shippings) ) {
-                                    foreach ($item->shippings as $shippItem) {
-                                        if (!in_array($shippItem->shippingtype, $shippingDesc)) {
-                                            array_push($shippingDesc, $shippItem->shippingtype);
-                                        }
+                    if (strpos($statusMage, 'ERROR:') === false) {
+                        //TRATA OS PRODUTOS
+                        $_products = array();
+                        $shippingDesc = array();
+                        foreach ($OrderJSON->items as $item) {
+
+                            if( isset($item->shippings) ) {
+                                foreach ($item->shippings as $shippItem) {
+                                    if (!in_array($shippItem->shippingtype, $shippingDesc)) {
+                                        array_push($shippingDesc, $shippItem->shippingtype);
                                     }
-                                }
-
-                                $productLoaded = Mage::getModel('catalog/product')->setStoreId($storeID)->loadByAttribute('sku', $item->sku->partnerId);
-                                if ($productLoaded) {
-                                    $arrayTMP = array(
-                                        'product' => $productLoaded->getId(),
-                                        'price' => $item->unit,
-                                        'qty' => $item->amount,
-                                    );
-
-                                    if($productLoaded->getTypeID() == "bundle") {
-                                        $optionsBundle = Mage::helper('db1_anymarket/product')->getDetailsOfBundle($productLoaded);
-
-                                        $boundOpt = array();
-                                        $boundOptQty = array();
-                                        foreach ($optionsBundle as $detProd) {
-                                            $boundOpt[$detProd['option_id']] = $detProd['selection_id'];
-                                            $boundOptQty[$detProd['option_id']] = $detProd['selection_qty'];
-                                        }
-
-                                        $arrayTMP['bundle_option'] = $boundOpt;
-                                        $arrayTMP['bundle_option_qty'] = $boundOptQty;
-                                    }
-
-                                    array_push($_products, $arrayTMP);
-                                } else {
-                                    if ($anymarketordersSpec->getData('nmo_id_anymarket') == null) {
-                                        $anymarketorders = Mage::getModel('db1_anymarket/anymarketorders');
-                                    } else {
-                                        $anymarketorders = $anymarketordersSpec;
-                                    }
-
-                                    $this->saveLogOrder('nmo_id_seq_anymarket',
-                                        $idSeqAnyMarket,
-                                        'ERROR 01',
-                                        Mage::helper('db1_anymarket')->__('Product is not registered') . ' (SKU: ' . $item->sku->partnerId . ')',
-                                        $idSeqAnyMarket,
-                                        $IDOrderAnyMarket,
-                                        '',
-                                        $storeID);
-
-                                    $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                                    $anymarketlog->setLogDesc(Mage::helper('db1_anymarket')->__('Product is not registered') . ' (Order: ' . $idSeqAnyMarket . ', SKU : ' . $item->sku->partnerId . ')');
-                                    $anymarketlog->setStores(array($storeID));
-                                    $anymarketlog->setStatus("0");
-                                    $anymarketlog->save();
-
-                                    $this->addMessageInBox($storeID, Mage::helper('db1_anymarket')->__('Error on synchronize order.'),
-                                        Mage::helper('db1_anymarket')->__('Error synchronizing order number: ') . "Anymarket(" . $IDOrderAnyMarket . ") <br/>" .
-                                        Mage::helper('db1_anymarket')->__('Product is not registered') . ' (SKU: ' . $item->sku->partnerId . ')',
-                                        '');
-                                    $stateProds = false;
-                                    break;
                                 }
                             }
 
-                            //verifica se criou o produto
-                            if ($stateProds) {
-                                //TRATA O CLIENTE
-                                $document = null;
-                                if (isset($OrderJSON->buyer->document)) {
-                                    $document = $OrderJSON->buyer->document;
+                            $productLoaded = Mage::getModel('catalog/product')->setStoreId($storeID)->loadByAttribute('sku', $item->sku->partnerId);
+                            if ($productLoaded) {
+                                $arrayTMP = array(
+                                    'product' => $productLoaded->getId(),
+                                    'price' => $item->unit,
+                                    'qty' => $item->amount,
+                                );
+
+                                if($productLoaded->getTypeID() == "bundle") {
+                                    $optionsBundle = Mage::helper('db1_anymarket/product')->getDetailsOfBundle($productLoaded);
+
+                                    $boundOpt = array();
+                                    $boundOptQty = array();
+                                    foreach ($optionsBundle as $detProd) {
+                                        $boundOpt[$detProd['option_id']] = $detProd['selection_id'];
+                                        $boundOptQty[$detProd['option_id']] = (float)$detProd['selection_qty'];
+                                    }
+
+                                    $arrayTMP['bundle_option'] = $boundOpt;
+                                    $arrayTMP['bundle_option_qty'] = $boundOptQty;
                                 }
 
-                                if ($document != null) {
-                                    try {
-                                        $AttrToDoc = strtolower(Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_doc_type_field', $storeID));
-                                        $groupCustomer = Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_customer_group_field', $storeID);
+                                array_push($_products, $arrayTMP);
+                            } else {
+                                $this->saveLogOrder('nmo_id_seq_anymarket',
+                                    $idSeqAnyMarket,
+                                    'ERROR 01',
+                                    Mage::helper('db1_anymarket')->__('Product is not registered') . ' (SKU: ' . $item->sku->partnerId . ')',
+                                    $idSeqAnyMarket,
+                                    $IDOrderAnyMarket,
+                                    '',
+                                    $storeID);
 
-                                        $email = $OrderJSON->buyer->email;
+                                $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                                $anymarketlog->setLogDesc(Mage::helper('db1_anymarket')->__('Product is not registered') . ' (Order: ' . $idSeqAnyMarket . ', SKU : ' . $item->sku->partnerId . ')');
+                                $anymarketlog->setStores(array($storeID));
+                                $anymarketlog->setStatus("0");
+                                $anymarketlog->save();
+
+                                $this->addMessageInBox($storeID, Mage::helper('db1_anymarket')->__('Error on synchronize order.'),
+                                    Mage::helper('db1_anymarket')->__('Error synchronizing order number: ') . "Anymarket(" . $IDOrderAnyMarket . ") <br/>" .
+                                    Mage::helper('db1_anymarket')->__('Product is not registered') . ' (SKU: ' . $item->sku->partnerId . ')',
+                                    '');
+                                $stateProds = false;
+                                break;
+                            }
+                        }
+
+                        //verifica se criou o produto
+                        if ($stateProds) {
+                            //TRATA O CLIENTE
+                            $document = null;
+                            if (isset($OrderJSON->buyer->document)) {
+                                $document = $OrderJSON->buyer->document;
+                            }
+
+                            if ($document != null) {
+                                try {
+                                    $AttrToDoc = strtolower(Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_doc_type_field', $storeID));
+                                    $groupCustomer = Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_customer_group_field', $storeID);
+
+                                    $email = $OrderJSON->buyer->email;
+                                    $customer = Mage::getModel('customer/customer')
+                                        ->getCollection()
+                                        ->addFieldToFilter($AttrToDoc, $document)->load()->getFirstItem();
+
+                                    //caso nao ache pelo CPF valida se nao tem mascara
+                                    if(!$customer->getId()) {
+                                        if (strlen($document) == 11) {
+                                            $document = $this->Mask('###.###.###-##', $document);
+                                        } else {
+                                            $document = $this->Mask('##.###.###/####-##', $document);
+                                        }
 
                                         $customer = Mage::getModel('customer/customer')
                                             ->getCollection()
                                             ->addFieldToFilter($AttrToDoc, $document)->load()->getFirstItem();
 
-                                        //caso nao ache pelo CPF valida se nao tem mascara
+                                        //caso ainda nao encontrou valida se existe o email
                                         if(!$customer->getId()) {
-                                            if (strlen($document) == 11) {
-                                                $document = $this->Mask('###.###.###-##', $document);
-                                            } else {
-                                                $document = $this->Mask('##.###.###/####-##', $document);
-                                            }
-
                                             $customer = Mage::getModel('customer/customer')
                                                 ->getCollection()
-                                                ->addFieldToFilter($AttrToDoc, $document)->load()->getFirstItem();
+                                                ->addFieldToFilter('email', $email)->load()->getFirstItem();
 
-                                            //caso ainda nao encontrou valida se existe o email
-                                            if(!$customer->getId()) {
-                                                $customer = Mage::getModel('customer/customer')
-                                                    ->getCollection()
-                                                    ->addFieldToFilter('email', $email)->load()->getFirstItem();
-
-                                            }
                                         }
+                                    }
 
-                                        $AddressShipBill = null;
+                                    $AddressShipBill = null;
 
-                                        $firstName = $OrderJSON->buyer->name;
-                                        $lastName = 'Lastname';
-                                        if ($firstName != '') {
-                                            $nameComplete = explode(" ", $firstName);
+                                    $firstName = $OrderJSON->buyer->name;
+                                    $lastName = 'Lastname';
+                                    if ($firstName != '') {
+                                        $nameComplete = explode(" ", $firstName);
 
-                                            $lastNameP = array_slice($nameComplete, 1);
-                                            $lastNameImp = implode(" ", $lastNameP);
+                                        $lastNameP = array_slice($nameComplete, 1);
+                                        $lastNameImp = implode(" ", $lastNameP);
 
-                                            $firstName = array_shift($nameComplete);
-                                            $lastName = $lastNameImp == '' ? 'Lastname' : $lastNameImp;
+                                        $firstName = array_shift($nameComplete);
+                                        $lastName = $lastNameImp == '' ? 'Lastname' : $lastNameImp;
+                                    }
+
+                                    $addressFullData = $this->getCompleteAddressOrder($storeID, $OrderJSON);
+                                    $regionCollection = Mage::getModel('directory/region')->getCollection();
+                                    $regionName = (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado';
+                                    $regionID = 0;
+                                    foreach ($regionCollection as $key) {
+                                        if( $key->getData('name') == $regionName){
+                                            $regionID = $key->getData('region_id');
+                                            break;
                                         }
+                                    }
 
-                                        $addressFullData = $this->getCompleteAddressOrder($storeID, $OrderJSON);
-                                        $regionCollection = Mage::getModel('directory/region')->getCollection();
-                                        $regionName = (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado';
-                                        $regionID = 0;
-                                        foreach ($regionCollection as $key) {
-                                            if( $key->getData('name') == $regionName){
-                                                $regionID = $key->getData('region_id');
-                                                break;
-                                            }
-                                        }
+                                    $addressFullData = $this->getCompleteAddressOrder($storeID, $OrderJSON);
 
-                                        $addressFullData = $this->getCompleteAddressOrder($storeID, $OrderJSON);
-
-                                        if ($customer->getId() == null) {
-                                            $_DataCustomer = array(
-                                                'account' => array(
-                                                    'firstname' => $firstName,
-                                                    'lastname' => $lastName,
-                                                    'email' => $email,
-                                                    $AttrToDoc => $document,
-                                                    'password' => 'a111111',
-                                                    'default_billing' => '_item1',
-                                                    'default_shipping' => '_item1',
-                                                    'store_id' => $storeID,
-                                                    'website_id' => Mage::app()->getWebsite()->getId(),
-                                                    'group_id' => $groupCustomer,
-                                                ),
-                                                'address' => array(
-                                                    '_item1' => array(
-                                                        'firstname' => $firstName,
-                                                        'lastname' => $lastName,
-                                                        'street' => $addressFullData,
-                                                        'city' => (isset($OrderJSON->shipping->city)) ? $OrderJSON->shipping->city : 'Não especificado',
-                                                        'country_id' => 'BR',
-                                                        'region_id' => $regionID,
-                                                        'region' => (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado',
-                                                        'postcode' => (isset($OrderJSON->shipping->zipCode)) ? $OrderJSON->shipping->zipCode : 'Não especificado',
-                                                        'telephone' => $OrderJSON->buyer->phone,
-                                                    ),
-                                                ),
-                                            );
-
-                                            $customerRet = Mage::helper('db1_anymarket/customergenerator')->createCustomer($_DataCustomer);
-                                            $customer = $customerRet['customer'];
-                                            $AddressShipBill = $customerRet['addr'];
-                                        } else {
-                                            //PERCORRE OS ENDERECOS PARA VER SE JA HA CADASTRADO O INFORMADO
-                                            $needRegister = true;
-                                            foreach ($customer->getAddresses() as $address) {
-                                                $zipCodeOrder = (isset($OrderJSON->shipping->zipCode)) ? $OrderJSON->shipping->zipCode : 'Não especificado';
-                                                $addressOrder = (isset($OrderJSON->shipping->address)) ? $OrderJSON->shipping->address : 'Frete não especificado.';
-                                                if (($address->getData('postcode') == $zipCodeOrder) && ($address->getData('street') == $addressOrder)) {
-                                                    $AddressShipBill = $address;
-                                                    $needRegister = false;
-                                                    break;
-                                                }
-                                            }
-
-                                            //CRIA O ENDERECO CASO NAO TENHA O INFORMADO
-                                            if ($needRegister) {
-                                                $address = Mage::getModel('customer/address');
-
-                                                $addressData = array(
+                                    if ($customer->getId() == null) {
+                                        $_DataCustomer = array(
+                                            'account' => array(
+                                                'firstname' => $firstName,
+                                                'lastname' => $lastName,
+                                                'email' => $email,
+                                                $AttrToDoc => $document,
+                                                'password' => 'a111111',
+                                                'default_billing' => '_item1',
+                                                'default_shipping' => '_item1',
+                                                'store_id' => $storeID,
+                                                'website_id' => Mage::app()->getWebsite()->getId(),
+                                                'group_id' => $groupCustomer,
+                                            ),
+                                            'address' => array(
+                                                '_item1' => array(
                                                     'firstname' => $firstName,
                                                     'lastname' => $lastName,
                                                     'street' => $addressFullData,
                                                     'city' => (isset($OrderJSON->shipping->city)) ? $OrderJSON->shipping->city : 'Não especificado',
                                                     'country_id' => 'BR',
-                                                    'region' => (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado',
                                                     'region_id' => $regionID,
+                                                    'region' => (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado',
                                                     'postcode' => (isset($OrderJSON->shipping->zipCode)) ? $OrderJSON->shipping->zipCode : 'Não especificado',
-                                                    'telephone' => $OrderJSON->buyer->phone
-                                                );
+                                                    'telephone' => $OrderJSON->buyer->phone,
+                                                ),
+                                            ),
+                                        );
 
-                                                $address->setIsDefaultBilling(1);
-                                                $address->setIsDefaultShipping(1);
-                                                $address->addData($addressData);
-                                                $address->setPostIndex('_item1');
-                                                $customer->addAddress($address);
-                                                $customer->save();
-                                            }
-
-                                        }
-
-                                        $infoMetPag = 'ANYMARKET';
-                                        $infoMetPagCom = array();
-                                        if( isset($OrderJSON->payments) ) {
-                                            foreach ($OrderJSON->payments as $payment) {
-                                                $infoMetPag = $payment->method;
-                                                if($payment->paymentMethodNormalized) {
-                                                    array_push($infoMetPagCom, $payment->paymentMethodNormalized." - Parcelas: ".$payment->installments);
-                                                }
+                                        $customerRet = Mage::helper('db1_anymarket/customergenerator')->createCustomer($_DataCustomer);
+                                        $customer = $customerRet['customer'];
+                                        $AddressShipBill = $customerRet['addr'];
+                                    } else {
+                                        //PERCORRE OS ENDERECOS PARA VER SE JA HA CADASTRADO O INFORMADO
+                                        $needRegister = true;
+                                        foreach ($customer->getAddresses() as $address) {
+                                            $zipCodeOrder = (isset($OrderJSON->shipping->zipCode)) ? $OrderJSON->shipping->zipCode : 'Não especificado';
+                                            $addressOrder = (isset($OrderJSON->shipping->address)) ? $OrderJSON->shipping->address : 'Frete não especificado.';
+                                            if (($address->getData('postcode') == $zipCodeOrder) && ($address->getData('street') == $addressOrder)) {
+                                                $AddressShipBill = $address;
+                                                $needRegister = false;
+                                                break;
                                             }
                                         }
 
-                                        //REFACTOR
-                                        $OrderIDMage = $this->create_order($storeID, $anymarketordersSpec, $_products, $customer, $IDOrderAnyMarket, $idSeqAnyMarket, $infoMetPag, $AddressShipBill, $AddressShipBill, $OrderJSON->freight, implode(",", $shippingDesc) );
-                                        $OrderCheck = Mage::getModel('sales/order')->loadByIncrementId($OrderIDMage);
+                                        //CRIA O ENDERECO CASO NAO TENHA O INFORMADO
+                                        if ($needRegister) {
+                                            $address = Mage::getModel('customer/address');
 
-                                        $this->changeFeedOrder($HOST, $headers, $idSeqAnyMarket, $tokenFeed);
+                                            $addressData = array(
+                                                'firstname' => $firstName,
+                                                'lastname' => $lastName,
+                                                'street' => $addressFullData,
+                                                'city' => (isset($OrderJSON->shipping->city)) ? $OrderJSON->shipping->city : 'Não especificado',
+                                                'country_id' => 'BR',
+                                                'region' => (isset($OrderJSON->shipping->state)) ? $OrderJSON->shipping->state : 'Não especificado',
+                                                'region_id' => $regionID,
+                                                'postcode' => (isset($OrderJSON->shipping->zipCode)) ? $OrderJSON->shipping->zipCode : 'Não especificado',
+                                                'telephone' => $OrderJSON->buyer->phone
+                                            );
 
-                                        if ($OrderCheck->getId()) {
-                                            $comment = '<b>Código do Pedido no Canal de Vendas: </b>'.$OrderJSON->marketPlaceNumber.'<br>';
-                                            $comment .= '<b>Canal de Vendas: </b>'.$OrderJSON->marketPlace.'<br>';
-
-                                            if( count($infoMetPagCom) > 0 ) {
-                                                foreach ($infoMetPagCom as $iMetPag) {
-                                                    $comment .= '<b>Forma de Pagamento: </b>' . $iMetPag . '<br>';
-                                                }
-                                            }else{
-                                                $comment .= '<b>Forma de Pagamento: </b>Inf. não disponibilizada pelo marketplace.<br>';
-                                            }
-
-                                            $addressComp = (isset($OrderJSON->shipping->address)) ? $OrderJSON->shipping->address : 'Não especificado';
-                                            $comment .= '<b>Endereço Completo: </b>'.$addressComp;
-
-                                            $OrderCheck->addStatusHistoryComment( $comment );
-                                            $OrderCheck->setEmailSent(false);
-                                            $OrderCheck->save();
-
-
-                                            $this->changeStatusOrder($storeID, $OrderJSON, $OrderIDMage);
+                                            $address->setIsDefaultBilling(1);
+                                            $address->setIsDefaultShipping(1);
+                                            $address->addData($addressData);
+                                            $address->setPostIndex('_item1');
+                                            $customer->addAddress($address);
+                                            $customer->save();
                                         }
-                                    } catch (Exception $e) {
-                                        $this->saveLogOrder('nmo_id_seq_anymarket',
-                                            $idSeqAnyMarket,
-                                            'ERROR 01',
-                                            'System: ' . $e->getMessage(),
-                                            $idSeqAnyMarket,
-                                            $IDOrderAnyMarket,
-                                            '',
-                                            $storeID);
 
                                     }
-                                } else {
+
+                                    $infoMetPag = 'ANYMARKET';
+                                    $infoMetPagCom = array();
+                                    if( isset($OrderJSON->payments) ) {
+                                        foreach ($OrderJSON->payments as $payment) {
+                                            $infoMetPag = $payment->method;
+                                            if($payment->paymentMethodNormalized) {
+                                                $parcelas = isset($payment->installments) ? $payment->installments : '0';
+                                                array_push($infoMetPagCom, $payment->paymentMethodNormalized." - Parcelas: ".$parcelas );
+                                            }
+                                        }
+                                    }
+
+                                    $OrderIDMage = $this->create_order($storeID, $anymarketordersSpec, $_products, $customer, $IDOrderAnyMarket, $idSeqAnyMarket, $infoMetPag, $AddressShipBill, $AddressShipBill, $OrderJSON->freight, implode(",", $shippingDesc) );
+                                    $OrderCheck = Mage::getModel('sales/order')->loadByIncrementId($OrderIDMage);
+
+                                    $this->changeFeedOrder($HOST, $headers, $idSeqAnyMarket, $tokenFeed);
+
+                                    if ($OrderCheck->getId()) {
+
+                                        $comment = '<b>Código do Pedido no Canal de Vendas: </b>'.$OrderJSON->marketPlaceNumber.'<br>';
+                                        $comment .= '<b>Canal de Vendas: </b>'.$OrderJSON->marketPlace.'<br>';
+
+                                        if(isset($OrderJSON->shipping->promisedShippingTime)){
+                                            $dateTmpPromis =  new DateTime($OrderJSON->shipping->promisedShippingTime);
+                                            $dateTmpPromis = date_format($dateTmpPromis, 'd/m/Y H:i:s');
+
+                                            $comment .= '<b>Entrega esperada para: </b>'.$dateTmpPromis.'<br>';
+                                        }
+
+                                        if( count($infoMetPagCom) > 0 ) {
+                                            foreach ($infoMetPagCom as $iMetPag) {
+                                                $comment .= '<b>Forma de Pagamento: </b>' . $iMetPag . '<br>';
+                                            }
+                                        }else{
+                                            $comment .= '<b>Forma de Pagamento: </b>Inf. não disponibilizada pelo marketplace.<br>';
+                                        }
+
+                                        $addressComp = (isset($OrderJSON->shipping->address)) ? $OrderJSON->shipping->address : 'Não especificado';
+                                        $comment .= '<b>Endereço Completo: </b>'.$addressComp;
+
+                                        $OrderCheck->addStatusHistoryComment( $comment );
+                                        $OrderCheck->setEmailSent(false);
+                                        $OrderCheck->save();
+
+                                        $this->changeStatusOrder($storeID, $OrderJSON, $OrderIDMage);
+                                    }
+                                } catch (Exception $e) {
+                                    $orderCheckExcpt = Mage::getModel('sales/order')->loadByIncrementId($OrderIDMage);
+                                    $statusExpt = $orderCheckExcpt->getId() ? 'Integrado' : 'ERROR 01';
                                     $this->saveLogOrder('nmo_id_seq_anymarket',
                                         $idSeqAnyMarket,
-                                        'ERROR 01',
-                                        Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'),
+                                        $statusExpt,
+                                        'System: ' . $e->getMessage(),
                                         $idSeqAnyMarket,
                                         $IDOrderAnyMarket,
-                                        '',
+                                        $OrderIDMage,
                                         $storeID);
 
-                                    $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                                    $anymarketlog->setLogDesc('Error on import Order: ' . Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'));
-                                    $anymarketlog->setStatus("0");
-                                    $anymarketlog->setStores(array($storeID));
-                                    $anymarketlog->save();
-
-                                    $this->addMessageInBox($storeID, Mage::helper('db1_anymarket')->__('Error on synchronize order.'),
-                                        Mage::helper('db1_anymarket')->__('Error synchronizing order number: ') . "Anymarket(" . $IDOrderAnyMarket . ") <br/>" .
-                                        Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'),
-                                        '');
+                                    Mage::log($e, null, 'anymarket_exception.log');
                                 }
+                            } else {
+                                $this->saveLogOrder('nmo_id_seq_anymarket',
+                                    $idSeqAnyMarket,
+                                    'ERROR 01',
+                                    Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'),
+                                    $idSeqAnyMarket,
+                                    $IDOrderAnyMarket,
+                                    '',
+                                    $storeID);
+
+                                $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                                $anymarketlog->setLogDesc('Error on import Order: ' . Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'));
+                                $anymarketlog->setStatus("0");
+                                $anymarketlog->setStores(array($storeID));
+                                $anymarketlog->save();
+
+                                $this->addMessageInBox($storeID, Mage::helper('db1_anymarket')->__('Error on synchronize order.'),
+                                    Mage::helper('db1_anymarket')->__('Error synchronizing order number: ') . "Anymarket(" . $IDOrderAnyMarket . ") <br/>" .
+                                    Mage::helper('db1_anymarket')->__('Customer invalid or blank document.'),
+                                    '');
                             }
-                        } else {
-                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                            $anymarketlog->setLogDesc($statusMage);
-                            $anymarketlog->setLogId($IDOrderAnyMarket);
-                            $anymarketlog->setStatus("0");
-                            $anymarketlog->save();
                         }
+                    }
 
-                        if ($tokenFeed != null) {
-                            $paramFeed = array(
-                                "token" => $tokenFeed
-                            );
+                    if ($tokenFeed != null && $tokenFeed != 'notoken') {
+                        $paramFeed = array(
+                            "token" => $tokenFeed
+                        );
 
-                            $this->CallAPICurl("PUT", $HOST . "/rest/api/v2/orders/feeds/" . $idSeqAnyMarket, $headers, $paramFeed);
-                        }
+                        $this->CallAPICurl("PUT", $HOST . "/rest/api/v2/orders/feeds/" . $idSeqAnyMarket, $headers, $paramFeed);
                     }
                 }
             }else{
-                $STATUSIMPORT = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_stauts_order_field', $storeID);
-                if (strpos($STATUSIMPORT, $OrderJSON->status) !== false) {
+                $statsConfig = $this->getStatusAnyMarketToMageOrderConfig($storeID, $OrderJSON->status);
+                $statusMage = $statsConfig["status"];
+                if (strpos($statusMage, 'ERROR:') === false) {
                     if ($anymarketordersSpec->getData('nmo_id_order') != null) {
                         $this->changeStatusOrder($storeID, $OrderJSON, $anymarketordersSpec->getData('nmo_id_order'));
                     }
@@ -644,27 +713,12 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             Mage::getSingleton('core/session')->setImportOrdersVariable('false');
             $order = Mage::getModel('sales/order')->loadByIncrementId( $IDOrderMagento );
 
-            if( $order->getData('state') == $stateMage ){
+            if( ($order->getData('state') == $stateMage) && ($order->getData('status') == $statusMage) ){
                 return false;
             }
 
             $createRegPay = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_create_reg_pay_field', $storeID);
             $itemsarray = null;
-
-            if( $createRegPay == "1" && $StatusPedAnyMarket == 'PAID_WAITING_SHIP' ){
-                if( $order->canInvoice() ){
-                    if( $this->checkIfCanCreateInvoice($order) ) {
-                        $orderItems = $order->getAllItems();
-                        foreach ($orderItems as $_eachItem) {
-                            $opid = $_eachItem->getId();
-                            $qty = $_eachItem->getQtyOrdered();
-                            $itemsarray[$opid] = $qty;
-                        }
-                        $nfeString = "Registro de Pagamento criado por Anymarket";
-                        Mage::getModel('sales/order_invoice_api')->create($order->getIncrementId(), $itemsarray, $nfeString, 0, 0);
-                    }
-                }
-            }
 
             if( isset($JSON->invoice) && $StatusPedAnyMarket == 'INVOICED' ){
                 if( $order->canInvoice() ){
@@ -730,28 +784,43 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
                 }
             }
 
-            if($statusMage != Mage_Sales_Model_Order::STATE_NEW){
-                if($stateMage == Mage_Sales_Model_Order::STATE_COMPLETE){
-                    $history = $order->addStatusHistoryComment('Finalizado pelo AnyMarket.', false);
-                    $history->setIsCustomerNotified(false);
+            $order->setData('state', $stateMage);
+            $order->setStatus($statusMage, true);
+
+            if($stateMage == Mage_Sales_Model_Order::STATE_COMPLETE){
+                $history = $order->addStatusHistoryComment('Finalizado pelo AnyMarket.', false);
+            }else{
+                $history = $order->addStatusHistoryComment('', false);
+            }
+            $history->setIsCustomerNotified(false);
+
+            if($stateMage == Mage_Sales_Model_Order::STATE_CANCELED) {
+                foreach ($order->getAllItems() as $item) {
+                    $stockItem = Mage::getModel('cataloginventory/stock_item')->loadByProduct( $item->getProductId() );
+                    if ($stockItem->getManageStock()) {
+                        $stockItem->setData('qty', $stockItem->getQty() + $item->getQtyOrdered());
+                    }
+                    $stockItem->save();
+
+                    $item->setQtyCanceled($item->getQtyOrdered());
+                    $item->save();
                 }
-                $order->setData('state', $stateMage);
-                $order->setStatus($statusMage, true);
+            }
+            $order->save();
 
-                if($stateMage == Mage_Sales_Model_Order::STATE_CANCELED) {
-                    foreach ($order->getAllItems() as $item) {
-                        $stockItem = Mage::getModel('cataloginventory/stock_item')->loadByProduct( $item->getProductId() );
-                        if ($stockItem->getManageStock()) {
-                            $stockItem->setData('qty', $stockItem->getQty() + $item->getQtyOrdered());
+            if( $createRegPay == "1" && $StatusPedAnyMarket == 'PAID_WAITING_SHIP' ){
+                if( $order->canInvoice() ){
+                    if( $this->checkIfCanCreateInvoice($order) ) {
+                        $orderItems = $order->getAllItems();
+                        foreach ($orderItems as $_eachItem) {
+                            $opid = $_eachItem->getId();
+                            $qty = $_eachItem->getQtyOrdered();
+                            $itemsarray[$opid] = $qty;
                         }
-                        $stockItem->save();
-
-                        $item->setQtyCanceled($item->getQtyOrdered());
-                        $item->save();
+                        $nfeString = "Registro de Pagamento criado por Anymarket";
+                        Mage::getModel('sales/order_invoice_api')->create($order->getIncrementId(), $itemsarray, $nfeString, 0, 0);
                     }
                 }
-
-                $order->save();
             }
 
             $this->saveLogOrder('nmo_id_anymarket',
@@ -770,12 +839,24 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             $anymarketlog->save();
 
             Mage::getSingleton('core/session')->setImportOrdersVariable('true');
+        }
+    }
+
+    public function procInvoiceModelsToAnymarket($CommentCurr){
+        $nfeCount = strpos($CommentCurr, 'nfe:');
+        $emissaoCount = strpos($CommentCurr, 'emiss');
+        if( (strpos($CommentCurr, 'nfe:') !== false) && (strpos($CommentCurr, 'emiss') !== false) ) {
+            $caracts = array("/", "-", ".");
+            $nfeTmp = str_replace($caracts, "", $CommentCurr );
+            $chaveAcID = substr( $nfeTmp, $nfeCount+4, 44);
+
+            $date = substr( $CommentCurr, $emissaoCount+8, 19);
+            $dateTmp = str_replace("/", "-", $date );
+
+            $date = $this->formatDateTimeZone($dateTmp);
+            return array("key" => $chaveAcID, "date" => $date);
         }else{
-            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-            $anymarketlog->setLogDesc( $statusMage );
-            $anymarketlog->setLogId( $IDOrderMagento ); 
-            $anymarketlog->setStatus("0");
-            $anymarketlog->save();
+            return null;
         }
     }
 
@@ -794,19 +875,12 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
                 $invoice = Mage::getModel('sales/order_invoice')->loadByIncrementId( $inv->getIncrementId() );
                 foreach ($invoice->getCommentsCollection() as $item) {
                     $CommentCurr = $item->getComment();
-
-                    $nfeCount = strpos($CommentCurr, 'nfe:');
-                    $emissaoCount = strpos($CommentCurr, 'emiss');
-                    if( (strpos($CommentCurr, 'nfe:') !== false) && (strpos($CommentCurr, 'emiss') !== false) ) {
-                        $caracts = array("/", "-", ".");
-                        $nfeTmp = str_replace($caracts, "", $CommentCurr );
-                        $chaveAcID = substr( $nfeTmp, $nfeCount+4, 44);
-                        $nfeID = $chaveAcID;
-
-                        $date = substr( $CommentCurr, $emissaoCount+8, 19);
-                        $dateTmp = str_replace("/", "-", $date );
-
-                        $date = $this->formatDateTimeZone($dateTmp);
+                    $invData = $this->procInvoiceModelsToAnymarket($CommentCurr);
+                    if( $invData ){
+                        $nfeID = $invData["key"];
+                        $chaveAcID = $invData["key"];
+                        $date = $invData["date"];
+                        break;
                     }
                 }
             }
@@ -816,75 +890,80 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             foreach ($Order->getStatusHistoryCollection() as $item) {
                 $CommentCurr = $item->getComment();
 
-                $CommentCurr = str_replace(array(" ", "<b>", "</b>"), "", $CommentCurr );
-                $CommentCurr = str_replace(array("<br>"), "<br/>", $CommentCurr );
-                $chaveAcesso = strpos($CommentCurr, 'ChavedeAcesso:');
-                if( (strpos($CommentCurr, 'ChavedeAcesso:') !== false) ) {
-                    $chaveAcID = substr( $CommentCurr, $chaveAcesso+14, 44);
+                $invData = $this->procInvoiceModelsToAnymarket($CommentCurr);
+                if( $invData ){
+                    $nfeID = $invData["key"];
+                    $chaveAcID = $invData["key"];
+                    $date = $invData["date"];
+                }else {
+                    $CommentCurr = str_replace(array(" ", "<b>", "</b>"), "", $CommentCurr);
+                    $CommentCurr = str_replace(array("<br>"), "<br/>", $CommentCurr);
+                    $chaveAcesso = strpos($CommentCurr, 'ChavedeAcesso:');
+                    if ((strpos($CommentCurr, 'ChavedeAcesso:') !== false)) {
+                        $chaveAcID = substr($CommentCurr, $chaveAcesso + 14, 44);
 
-                    $notaFiscal = strpos($CommentCurr, 'Notafiscal:');
-                    if( (strpos($CommentCurr, 'Notafiscal:') !== false) ) {
-                        $endNF = strpos($CommentCurr, '<br/>');
-                        $nfeID = substr( $CommentCurr, $notaFiscal+11, $endNF-11);
+                        $notaFiscal = strpos($CommentCurr, 'Notafiscal:');
+                        if ((strpos($CommentCurr, 'Notafiscal:') !== false)) {
+                            $endNF = strpos($CommentCurr, '<br/>');
+                            $nfeID = substr($CommentCurr, $notaFiscal + 11, $endNF - 11);
 
-                        if( $nfeID == "" ){
-                            $nfeID = $chaveAcID;
+                            if ($nfeID == "") {
+                                $nfeID = $chaveAcID;
+                            }
+                        } else {
+                            $notaFiscal = strpos($CommentCurr, 'NrNF-e');
+                            if ($notaFiscal !== false) {
+                                $endNF = strpos($CommentCurr, '<br/>');
+                                $nfeID = substr($CommentCurr, $notaFiscal + 6, $endNF - 6);
+
+                                if ($nfeID == "") {
+                                    $nfeID = $chaveAcID;
+                                }
+                            }
                         }
-                    }
-					
-					$dateTmp =  new DateTime(str_replace("/", "-", $item->getData('created_at') ));
-					$date = date_format($dateTmp, 'Y-m-d\TH:i:s\Z');					
-                    break;
-                }
-            }
-        }
 
-        if( $chaveAcID == "" ) {
-            if ($Order->hasShipments()){
-                foreach ($Order->getShipmentsCollection() as $ship) {
-                    $shippment = Mage::getModel('sales/order_shipment')->loadByIncrementId( $ship->getIncrementId() );
-                    foreach ($shippment->getCommentsCollection() as $item) {
-                        $CommentCurr = $item->getComment();
-
-                        $nfeCount = strpos($CommentCurr, 'nfe:');
-                        $emissaoCount = strpos($CommentCurr, 'emiss');
-                        if( (strpos($CommentCurr, 'nfe:') !== false) && (strpos($CommentCurr, 'emiss') !== false) ) {
-                            $caracts = array("/", "-", ".");
-                            $nfeTmp = str_replace($caracts, "", $CommentCurr );
-                            $chaveAcID = substr( $nfeTmp, $nfeCount+4, 44);
-                            $nfeID = $chaveAcID;
-
-                            $date = substr( $CommentCurr, $emissaoCount+8, 19);
-                            $dateTmp = str_replace("/", "-", $date );
-
-                            $date = $this->formatDateTimeZone($dateTmp);
-                        }
+                        $dateTmp = new DateTime(str_replace("/", "-", $item->getData('created_at')));
+                        $date = date_format($dateTmp, 'Y-m-d\TH:i:s\Z');
+                        break;
                     }
                 }
             }
         }
 
-        $retArr = array("number" => $nfeID, "date" => $date, "accessKey" => $chaveAcID);
-        return $retArr;
+        if( $chaveAcID == "" && $Order->hasShipments() ) {
+            foreach ($Order->getShipmentsCollection() as $ship) {
+                $shippment = Mage::getModel('sales/order_shipment')->loadByIncrementId( $ship->getIncrementId() );
+                foreach ($shippment->getCommentsCollection() as $item) {
+                    $CommentCurr = $item->getComment();
+                    $invData = $this->procInvoiceModelsToAnymarket($CommentCurr);
+                    if( $invData ){
+                        $nfeID = $invData["key"];
+                        $chaveAcID = $invData["key"];
+                        $date = $invData["date"];
+                    }
+                }
+            }
+        }
+        return array("number" => $nfeID, "date" => $date, "accessKey" => $chaveAcID);
     }
 
     /**
      * get tracking order
      *
-     * * @param $storeID
      * @param $Order
      * @return array
      */
-    public function getTrackingOrder($storeID, $Order){
+    public function getTrackingOrder($Order){
         $TrackNum = '';
         $TrackTitle = '';
         $TrackCreate = '';
         $dateTrack = '';
-
+        $datesRes = array("", "");
         $shipmentCollection = Mage::getResourceModel('sales/order_shipment_collection')
                                                     ->setOrderFilter($Order)
                                                     ->load();
         foreach ($shipmentCollection as $shipment){
+            $datesRes = $this->getDatesFromShipping($shipment);
             foreach($shipment->getAllTracks() as $tracknum){
                 $TrackNum = $tracknum->getNumber();
                 $TrackTitle = $tracknum->getTitle();
@@ -895,121 +974,150 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             }
         }
 
-        $days = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_estimate_date_field', $storeID);
+        $retArray = array("number" => $TrackNum,
+                             "carrier" => $TrackTitle,
+                             "date" => $dateTrack,
+                             "url" => "");
 
-        $days = ($days == "" || $days == null) ? 10 : $days;
-        $stimatedDate = date('Y-m-d\TH:i:s\Z', strtotime("+".$days." days", strtotime($dateTrack)));
-        return array("number" => $TrackNum,
-                     "carrier" => $TrackTitle,
-                     "date" => $dateTrack,
-                     "shippedDate" => $dateTrack,
-                     "url" => "",
-                     "estimateDate" => $stimatedDate);
+        $retArray["shippedDate"]  = ($datesRes[1] != "") ? $datesRes[1] : $dateTrack;
+        if($datesRes[0] != "") {
+            $retArray["estimateDate"] = $datesRes[0];
+        }else{
+            $estFromOrder = $this->getEstimatedDateFromOrder($Order);
+            if($estFromOrder != ""){
+                $retArray["estimateDate"] = $estFromOrder;
+            }
+        }
+
+        $deliveredDate = $this->getDeliveredDateFromOrder( $Order );
+        if( $deliveredDate ){
+            $retArray['deliveredDate'] = $this->formatDateTimeZone(str_replace("/", "-", $deliveredDate ));
+        }
+
+        return $retArray;
+    }
+
+    /**
+     * update or create order in AM
+     *
+     * @param $Order
+     */
+    public function updateOrCreateOrderAnyMarket($storeID, $Order){
+        $ConfigOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
+        $canUpdateOrder = $this->updateOrderAnymarket($storeID, $Order);
+        if (!$canUpdateOrder && $ConfigOrder == 0) {
+            $this->sendOrderToAnyMarket($storeID, $Order);
+        }
     }
 
     /**
      * update order in AM
      *
+     * @param $storeID
      * @param $Order
+     *
+     * @return bool
      */
-    public function updateOrderAnyMarket($storeID, $Order){
-        $ImportOrderSession = Mage::getSingleton('core/session')->getImportOrdersVariable();
-        if( $ImportOrderSession != 'false' ) {
-            $ConfigOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
-            $idOrder = $Order->getIncrementId();
-            $status = $Order->getStatus();
-            $anymarketorderupdt = Mage::getModel('db1_anymarket/anymarketorders')->load($idOrder, 'nmo_id_order');
+    public function updateOrderAnymarket($storeID, $Order){
+        $idOrder = $Order->getIncrementId();
+        $anymarketorderupdt = Mage::getModel('db1_anymarket/anymarketorders')->load($idOrder, 'nmo_id_order');
 
-            if( ($ConfigOrder == 0) ||
-                ($anymarketorderupdt->getData('nmo_status_int') == 'Integrado') || 
-                ($anymarketorderupdt->getData('nmo_status_int') == 'ERROR 02')){
-
-                $HOST  = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
-                $TOKEN = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_token_field', $storeID); 
-
-                $headers = array(
-                    "Content-type: application/json",
-                    "Accept: */*",
-                    "gumgaToken: ".$TOKEN
-                );
-
-                if( ($anymarketorderupdt->getData('nmo_id_order') != null) && ($anymarketorderupdt->getData('nmo_id_anymarket') != null) ){
-                    $statuAM = $this->getStatusMageToAnyMarketOrderConfig($storeID, $status);
-                    if (strpos($statuAM, 'ERROR:') === false) {
-                        $params = array(
-                          "status" => $statuAM
-                        );
-
-                        $invoiceData = $this->getInvoiceOrder($Order);
-                        $trackingData = $this->getTrackingOrder($storeID, $Order);
-
-                        if ($invoiceData['number'] != '') {
-                            $params["invoice"] = $invoiceData;
-                        }
-
-                        if ($trackingData['number'] != '') {
-                            $params["tracking"] = $trackingData;
-                        }
-
-                        if( ($statuAM == "CONCLUDED" || $statuAM == "CANCELED" || $statuAM == "PAID_WAITING_SHIP" || $statuAM == "INVOICED" || $statuAM == "PAID_WAITING_DELIVERY" ) ||
-                            (isset($params["tracking"]) || isset($params["invoice"])) ){
-                            $IDOrderAnyMarket = $anymarketorderupdt->getData('nmo_id_seq_anymarket');
-
-                            $returnOrder = $this->CallAPICurl("PUT", $HOST."/v2/orders/".$IDOrderAnyMarket, $headers, $params);
-
-                            if($returnOrder['error'] == '1'){
-                                $anymarketorderupdt->setStatus("0");
-                                $anymarketorderupdt->setNmoStatusInt('ERROR 02');
-                                $anymarketorderupdt->setNmoDescError($returnOrder['return']);
-                                $anymarketorderupdt->setStores(array($storeID));
-                                $anymarketorderupdt->save();
-                            }
-
-                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                            $anymarketlog->setLogDesc( json_encode($returnOrder['return']) );
-                            $anymarketlog->setLogId( $idOrder );
-                            $anymarketlog->setLogJson( json_encode($returnOrder['json']) );
-                            $anymarketlog->setStores(array($storeID));
-                            $anymarketlog->setStatus("0");
-                            $anymarketlog->save();
-                        }else{
-                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                            $anymarketlog->setLogDesc( Mage::helper('db1_anymarket')->__('There was some error getting data Invoice or Tracking.') );
-                            $anymarketlog->setLogId( $idOrder );
-                            $anymarketlog->setLogJson('');
-                            $anymarketlog->setStores(array($storeID));
-                            $anymarketlog->setStatus("0");
-                            $anymarketlog->save();
-                        }
-                    }else{
-                        if($ConfigOrder == 0){
-                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                            $anymarketlog->setStatus("0");
-                            $anymarketlog->setLogDesc( $statuAM );
-                            $anymarketlog->setLogId( $idOrder );
-                            $anymarketlog->setStores(array($storeID));
-                            $anymarketlog->save();
-                        }
-                    }
-                }else{
-                    $this->sendOrderToAnyMarket($storeID, $idOrder, $HOST, $TOKEN);
-                }
-            }
+        if($anymarketorderupdt->getData('nmo_id_seq_anymarket') == null ||
+           $anymarketorderupdt->getData('nmo_id_seq_anymarket') == ""){
+            return false;
         }
 
+        if( ($anymarketorderupdt->getData('nmo_status_int') != 'ERROR 02') &&
+            ($anymarketorderupdt->getData('nmo_status_int') != 'Integrado')){
+            return false;
+        }
+
+        $HOST  = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
+        $TOKEN = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_token_field', $storeID);
+
+        $status = $Order->getStatus();
+        $statuAM = $this->getStatusMageToAnyMarketOrderConfig($storeID, $status);
+        if (strpos($statuAM, 'ERROR:') !== false) {
+            return false;
+        }
+
+            if($statuAM == "PENDING" ){
+                return false;
+            }
+
+            $headers = array(
+                "Content-type: application/json",
+                "Accept: */*",
+                "gumgaToken: ".$TOKEN
+            );
+
+            $params = array(
+                "status" => $statuAM
+            );
+
+            $invoiceData = $this->getInvoiceOrder($Order);
+            if ($invoiceData['accessKey'] != '') {
+                $params["invoice"] = $invoiceData;
+            }else if($statuAM == "INVOICED"){
+                return false;
+            }
+
+            $trackingData = $this->getTrackingOrder($Order);
+            if ($trackingData['number'] != '') {
+                $params["tracking"] = $trackingData;
+            }
+
+            if( isset( $params["tracking"] ) && $statuAM == "CONCLUDED" ){
+                $deliveredDate = $params["tracking"];
+                if( !isset($deliveredDate['deliveredDate']) ){
+                    return false;
+                }
+            }
+
+            if( isset($params["tracking"]) || isset($params["invoice"]) ){
+                $IDOrderAnyMarket = $anymarketorderupdt->getData('nmo_id_seq_anymarket');
+
+                $returnOrder = $this->CallAPICurl("PUT", $HOST."/v2/orders/".$IDOrderAnyMarket, $headers, $params);
+                if($returnOrder['error'] == '1'){
+                    $anymarketorderupdt->setStatus("0");
+                    $anymarketorderupdt->setNmoStatusInt('ERROR 02');
+                    $anymarketorderupdt->setNmoDescError($returnOrder['return']);
+                    $anymarketorderupdt->setStores(array($storeID));
+                    $anymarketorderupdt->save();
+                }
+
+                $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                $anymarketlog->setLogDesc( json_encode($returnOrder['return']) );
+                $anymarketlog->setLogId( $idOrder );
+                $anymarketlog->setLogJson( json_encode($returnOrder['json']) );
+                $anymarketlog->setStores(array($storeID));
+                $anymarketlog->setStatus("0");
+                $anymarketlog->save();
+            }else{
+                $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                $anymarketlog->setLogDesc( Mage::helper('db1_anymarket')->__('There was some error getting data Invoice or Tracking.') );
+                $anymarketlog->setLogId( $idOrder );
+                $anymarketlog->setLogJson('');
+                $anymarketlog->setStores(array($storeID));
+                $anymarketlog->setStatus("0");
+                $anymarketlog->save();
+            }
+
+        return true;
     }
 
     /**
      * send order to AM
      *
-     * @param $idOrder
-     * @param $HOST
-     * @param $TOKEN
+     * @param $storeID
+     * @param $Order
      */
-    private function sendOrderToAnyMarket($storeID, $idOrder, $HOST, $TOKEN){
+    public function sendOrderToAnyMarket($storeID, $Order){
         $ConfigOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
-        if($ConfigOrder == 0 && $idOrder){
-            $Order = Mage::getModel('sales/order')->setStoreId($storeID)->loadByIncrementId( $idOrder );
+        if($ConfigOrder == 0){
+            $idOrder = $Order->getIncrementId();
+            $HOST  = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
+            $TOKEN = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_token_field', $storeID);
 
             //TRATA OS ITEMS
             $orderedItems = $Order->getAllVisibleItems();
@@ -1053,100 +1161,120 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
             }
 
 
-            if( (strpos($statuAM, 'ERROR:') === false) && ($statuAM != '') ) {
-                $params = array(
-                    'marketPlaceId' => $idOrder,
-                    "createdAt" => $this->formatDateTimeZone( $Order->getData('created_at') ),
-                    "status" =>  $statuAM,
-                    "marketPlace" => "ECOMMERCE",
-                    "marketPlaceStatus" => $statuAM,
-                    "marketPlaceUrl" => null,
-                    "shipping" => array(
-                        "city" => $shipping->getCity(),
-                        "state" => $shipping->getRegion(),
-                        "country" => $shipping->getCountry(),
-                        "address" => $shipping->getStreetFull(),
-                        "street" =>  $shipping->getStreet(1),
-                        "number" =>  $shipping->getStreet(2),
-                        "comment" =>  $shipping->getStreet(3),
-                        "neighborhood" =>  $shipping->getStreet(4),
-                        "zipCode" => $shipping->getPostcode()
-                    ),
-                    "buyer" => array(
-                        "id" => 0,
-                        "name" => $Order->getCustomerFirstname()." ".$Order->getCustomerLastname(),
-                        "email" => $Order->getCustomerEmail(),
-                        "document" =>  $docData,
-                        "documentType" => $this->getDocumentType($docData),
-                        "phone" => $shipping->getTelephone(),
-                    ),
-                    "items" => $orderedProductIds,
-                    "payments" => array(
-                                    array(
-                                        "method" => $payment->getMethodInstance()->getTitle(),
-                                        "status" => "",
-                                        "value" => $Order->getBaseGrandTotal()
-                                    ),
-                    ),
-                    "discount" => floatval( $Order->getDiscountAmount() ) < 0 ? floatval( $Order->getDiscountAmount() )*-1 : $Order->getDiscountAmount(),
-                    "freight" => $Order->getShippingAmount(),
-                    "gross" => $Order->getBaseSubtotal(),
-                    "total" => $Order->getBaseGrandTotal()
-                );
+            if( (strpos($statuAM, 'ERROR:') !== false) || ($statuAM == '') ) {
+                return false;
+            }
+            $dateTmp =  new DateTime(str_replace("/", "-", $Order->getData('created_at') ));
+            $params = array(
+                'marketPlaceId' => $idOrder,
+                "createdAt" => date_format($dateTmp, 'Y-m-d\TH:i:s\Z'),
+                "status" =>  $statuAM,
+                "marketPlace" => "ECOMMERCE",
+                "marketPlaceStatus" => $statuAM,
+                "marketPlaceUrl" => null,
+                "shipping" => array(
+                    "city" => $shipping->getCity(),
+                    "state" => $shipping->getRegion(),
+                    "country" => $shipping->getCountry(),
+                    "address" => $shipping->getStreetFull(),
+                    "street" =>  $shipping->getStreet(1),
+                    "number" =>  $shipping->getStreet(2),
+                    "comment" =>  $shipping->getStreet(3),
+                    "neighborhood" =>  $shipping->getStreet(4),
+                    "zipCode" => $shipping->getPostcode()
+                ),
+                "buyer" => array(
+                    "id" => 0,
+                    "name" => $Order->getCustomerFirstname()." ".$Order->getCustomerLastname(),
+                    "email" => $Order->getCustomerEmail(),
+                    "document" =>  $docData,
+                    "documentType" => $this->getDocumentType($docData),
+                    "phone" => $shipping->getTelephone(),
+                ),
+                "items" => $orderedProductIds,
+                "payments" => array(
+                                array(
+                                    "method" => $payment->getMethodInstance()->getTitle(),
+                                    "status" => "",
+                                    "value" => $Order->getBaseGrandTotal()
+                                ),
+                ),
+                "discount" => floatval( $Order->getDiscountAmount() ) < 0 ? floatval( $Order->getDiscountAmount() )*-1 : $Order->getDiscountAmount(),
+                "freight" => $Order->getShippingAmount(),
+                "gross" => $Order->getBaseSubtotal(),
+                "total" => $Order->getBaseGrandTotal()
+            );
 
-                $arrTracking = $this->getTrackingOrder($storeID, $Order);
-                $arrInvoice = $this->getInvoiceOrder($Order);
+            $arrTracking = $this->getTrackingOrder($Order);
+            $arrInvoice = $this->getInvoiceOrder($Order);
 
-                if($arrTracking["number"] != ''){
-                    $params["tracking"] = $arrTracking;
-                };
+            if($arrTracking["number"] != ''){
+                $params["tracking"] = $arrTracking;
+            };
 
-                if($arrInvoice["number"] != ''){
-                    $params["invoice"] = $arrInvoice;
-                };
+            if($arrInvoice["number"] != ''){
+                $params["invoice"] = $arrInvoice;
+            };
 
-                $headers = array(
-                    "Content-type: application/json",
-                    "Accept: */*",
-                    "gumgaToken: ".$TOKEN
-                );
+            $headers = array(
+                "Content-type: application/json",
+                "Accept: */*",
+                "gumgaToken: ".$TOKEN
+            );
 
-                $returnOrder = $this->CallAPICurl("POST", $HOST."/v2/orders/", $headers, $params);
+            $returnOrder = $this->CallAPICurl("POST", $HOST."/v2/orders/", $headers, $params);
 
-                $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                $anymarketlog->setLogDesc( json_encode($returnOrder['return']) );
+            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+            $anymarketlog->setLogDesc( json_encode($returnOrder['return']) );
 
-                $anymarketorders = Mage::getModel('db1_anymarket/anymarketorders')->load($idOrder, 'nmo_id_order');
-                $anymarketorders->setStatus("1");
-                $anymarketorders->setStores(array($storeID));
-                if($returnOrder['error'] == '1'){
+            $anymarketorders = Mage::getModel('db1_anymarket/anymarketorders')->load($idOrder, 'nmo_id_order');
+            $anymarketorders->setStatus("1");
+            $anymarketorders->setStores(array($storeID));
+            if($returnOrder['error'] == '1'){
+                if( strpos($returnOrder['return'], 'existe uma venda de ECOMMERCE cadastrada com o') === false ) {
                     $anymarketorders->setNmoStatusInt('ERROR 02');
                     $anymarketorders->setNmoDescError($returnOrder['return']);
                 }else{
-                    $retOrderJSON = $returnOrder['return'];
-                    $anymarketorders->setNmoStatusInt('Integrado');
-                    $anymarketorders->setNmoDescError('');
-                    $anymarketorders->setNmoIdAnymarket( $retOrderJSON->marketPlaceId );
-                    $anymarketorders->setNmoIdSeqAnymarket( $retOrderJSON->id );
-                    
-                    $anymarketlog->setLogId( $retOrderJSON->marketPlaceId );
+                    $OrderResp = json_decode($returnOrder['return']);
+
+                    $IDAnymarket = strpos($OrderResp, 'ID Anymarket');
+                    if ($IDAnymarket !== false) {
+                        $idAnymarketOrder = substr($OrderResp, $IDAnymarket+14, 100);
+                        $idAnymarketOrder = str_replace(']"}', "", $idAnymarketOrder );
+
+                        if( is_numeric ($idAnymarketOrder) ) {
+                            $anymarketorders->setNmoStatusInt('Integrado');
+                            $anymarketorders->setNmoDescError('');
+                            $anymarketorders->setNmoIdSeqAnymarket($idAnymarketOrder);
+                            $anymarketorders->setNmoIdOrder($idOrder);
+                            $anymarketorders->setNmoIdAnymarket($idOrder);
+                            $anymarketorders->save();
+
+                            $anymarketlog->setStores(array($storeID));
+                            $anymarketlog->setLogDesc("Pedido encontrado [" . $idAnymarketOrder . "] e realizado o relacionamento.");
+                            $anymarketlog->setStatus("0");
+                            $anymarketlog->save();
+
+                            $OrderRetry = Mage::getModel('sales/order')->loadByIncrementId($idOrder);
+                            $this->updateOrCreateOrderAnyMarket($storeID, $OrderRetry);
+                            return $this;
+                        }
+                    }
                 }
-
-                $anymarketlog->setStores(array($storeID));
-                $anymarketlog->setLogJson( $returnOrder['json'] );
-                $anymarketlog->setStatus("0");
-                $anymarketlog->save();
-
             }else{
-                $anymarketorders = Mage::getModel('db1_anymarket/anymarketorders')->load($idOrder, 'nmo_id_order');
-                $anymarketorders->setNmoStatusInt('ERROR 02');
-                $anymarketorders->setStores(array($storeID));
-                if($statuAM != ''){
-                    $anymarketorders->setNmoDescError( $statuAM );
-                }else{
-                    $anymarketorders->setNmoDescError( 'Status new não foi referenciado.' );
-                }
+                $retOrderJSON = $returnOrder['return'];
+                $anymarketorders->setNmoStatusInt('Integrado');
+                $anymarketorders->setNmoDescError('');
+                $anymarketorders->setNmoIdAnymarket( $retOrderJSON->marketPlaceId );
+                $anymarketorders->setNmoIdSeqAnymarket( $retOrderJSON->id );
+
+                $anymarketlog->setLogId( $retOrderJSON->marketPlaceId );
             }
+
+            $anymarketlog->setStores(array($storeID));
+            $anymarketlog->setLogJson( $returnOrder['json'] );
+            $anymarketlog->setStatus("0");
+            $anymarketlog->save();
 
             $anymarketorders->setNmoIdOrder($idOrder);
             $anymarketorders->save();
@@ -1162,7 +1290,6 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
     public function listOrdersFromAnyMarketMagento($storeID){
         $HOST  = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
         $TOKEN = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_token_field', $storeID);
-        $STATUSIMPORT = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_stauts_order_field', $storeID);
 
         $headers = array(
             "Content-type: application/json",
@@ -1194,7 +1321,9 @@ class DB1_AnyMarket_Helper_Order extends DB1_AnyMarket_Helper_Data
                 foreach ($JsonReturn->content as $value) {
                     $IDOrderAnyMarket = $value->marketPlaceId;
 
-                    if (strpos($STATUSIMPORT, $value->status) !== false) {
+                    $statsConfig = $this->getStatusAnyMarketToMageOrderConfig($storeID, $value->status);
+                    $statusMage = $statsConfig["status"];
+                    if (strpos($statusMage, 'ERROR:') === false) {
                         $anymarketorders = Mage::getModel('db1_anymarket/anymarketorders')->setStoreId($storeID);
                         $anymarketorders->load($IDOrderAnyMarket, 'nmo_id_anymarket');
                         if ($anymarketorders->getData('nmo_id_anymarket') == null || (is_array($anymarketorders->getData('store_id')) && !in_array($storeID, $anymarketorders->getData('store_id')))) {

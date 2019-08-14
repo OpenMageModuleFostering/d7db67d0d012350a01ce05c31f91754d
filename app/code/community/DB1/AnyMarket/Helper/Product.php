@@ -341,8 +341,13 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
      * @return Mage_Catalog_Model_Product
      */
     private function update_configurable_product($storeID, $idProd, $dataProdConfig, $simpleProducts){
+        $productsIDs = array();
+        foreach ($simpleProducts as $prodVal) {
+            array_push($productsIDs, $prodVal['Id']);
+        }
+
         $productGenerator = Mage::helper('db1_anymarket/productgenerator');
-        $product = $productGenerator->updateConfigurableProduct($storeID, $idProd, $dataProdConfig, $simpleProducts);
+        $product = $productGenerator->updateConfigurableProduct($storeID, $idProd, $dataProdConfig, $productsIDs);
 
         $returnProd['return'] = Mage::helper('db1_anymarket')->__('Configurable product Updated').' ('.$product->getSku().')';
         $returnProd['error'] = '0';
@@ -351,7 +356,6 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
 
         return $product;
     }
-
     /**
      * create simple prod in magento
      *
@@ -490,6 +494,8 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
      * @param $product
      * @param $skusParam
      * @param $storeID
+     *
+     * @return Boolean
      */
     public function sendImageSkuToAnyMarket($storeID, $product, $skusParam) {
         $HOST  = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
@@ -500,56 +506,61 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
             "Cache-Control: no-cache",
             "gumgaToken: ".$TOKEN
         );
+
         // SINCRONIZA AS FOTOS E SKUS
         if($product->getData('id_anymarket') != "" || $product->getData('id_anymarket') != 0) {
             $skusProd = $this->CallAPICurl("GET", $HOST . "/v2/products/" . $product->getData('id_anymarket') . "/skus", $headers, null);
             if ($skusProd['error'] == '0') {
+                if($product->getTypeID() == "configurable" && $product->getData('integra_images_root_anymarket') == 1 ){
+                    //obtem as imagens do produto(Config)
+                    Mage::helper('db1_anymarket/image')->sendImageToAnyMarket($storeID, $product, null);
+                }
+
                 foreach ($skusParam as $skuPut) {
                     $prodSimple = Mage::getModel('catalog/product')->setStoreId($storeID)->loadByAttribute('sku', $skuPut['partnerId']);
-                    if ($prodSimple->getData('id_anymarket') != '') {
-                        $paramSku = array(
-                            "title" => $skuPut['title'],
-                            "partnerId" => $skuPut['partnerId'],
-                            "ean" => $skuPut['ean'],
-                            "amount" => $skuPut['amount'],
-                            "price" => $skuPut['price'],
-                        );
+                    $paramSku = array(
+                        "title" => $skuPut['title'],
+                        "partnerId" => $skuPut['partnerId'],
+                        "ean" => $skuPut['ean'],
+                        "amount" => $skuPut['amount'],
+                        "price" => $skuPut['price'],
+                    );
 
-                        if (isset($skuPut['variations'])) {
-                            foreach ($skuPut['variations'] as $variationPut) {
-                                Mage::helper('db1_anymarket/image')->sendImageToAnyMarket($storeID, $prodSimple, $variationPut);
-                            }
-                            $paramSku['variations'] = $skuPut['variations'];
-                        } else {
-                            Mage::helper('db1_anymarket/image')->sendImageToAnyMarket($storeID, $product, null);
+                    if (isset($skuPut['variations'])) {
+                        foreach ($skuPut['variations'] as $variationPut) {
+                            Mage::helper('db1_anymarket/image')->sendImageToAnyMarket($storeID, $prodSimple, $variationPut);
                         }
-
-                        $flagHSku = '';
-                        if (isset($skusProd['return'])) {
-                            foreach ($skusProd['return'] as $skuAM) {
-                                if ($skuAM->partnerId == $prodSimple->getSku()) {
-                                    $flagHSku = $skuAM->id;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if ($flagHSku != '') {
-                            $skuProdReturn = $this->CallAPICurl("PUT", $HOST . "/v2/products/" . $product->getData('id_anymarket') . "/skus/" . $flagHSku, $headers, $paramSku);
-
-                            if ($skuProdReturn['error'] == '0') {
-                                $skuProdReturn['return'] = Mage::helper('db1_anymarket')->__('SKU Updated') . ' (' . $skuPut['partnerId'] . ')';
-                            }
-                        } else {
-                            $skuProdReturn = $this->CallAPICurl("POST", $HOST . "/v2/products/" . $product->getData('id_anymarket') . "/skus", $headers, $paramSku);
-
-                            if ($skuProdReturn['error'] == '0') {
-                                $skuProdReturn['return'] = Mage::helper('db1_anymarket')->__('SKU Created') . ' (' . $skuPut['partnerId'] . ')';
-                            }
-                        }
-
-                        $this->saveLogsProds($storeID, "1", $skuProdReturn, $prodSimple);
+                        $paramSku['variations'] = $skuPut['variations'];
+                    } else {
+                        Mage::helper('db1_anymarket/image')->sendImageToAnyMarket($storeID, $product, null);
                     }
+
+                    $flagHSku = '';
+                    if (isset($skusProd['return'])) {
+                        foreach ($skusProd['return'] as $skuAM) {
+                            if ($skuAM->partnerId == $prodSimple->getSku()) {
+                                $flagHSku = $skuAM->id;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($flagHSku != '') {
+                        $skuProdReturn = $this->CallAPICurl("PUT", $HOST . "/v2/products/" . $product->getData('id_anymarket') . "/skus/" . $flagHSku, $headers, $paramSku);
+
+                        if ($skuProdReturn['error'] == '0') {
+                            $skuProdReturn['return'] = Mage::helper('db1_anymarket')->__('SKU Updated') . ' (' . $skuPut['partnerId'] . ')';
+                        }
+                    } else {
+                        $skuProdReturn = $this->CallAPICurl("POST", $HOST . "/v2/products/" . $product->getData('id_anymarket') . "/skus", $headers, $paramSku);
+
+                        if ($skuProdReturn['error'] == '0') {
+                            $skuProdReturn['return'] = Mage::helper('db1_anymarket')->__('SKU Created') . ' (' . $skuPut['partnerId'] . ')';
+                        }
+                    }
+
+                    $this->saveLogsProds($storeID, "1", $skuProdReturn, $prodSimple);
+
                 }
             } else {
                 $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
@@ -1316,7 +1327,7 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
      * @param $storeID
      */
     public function getStockProductAnyMarket($storeID, $IDProd){
-        $product = Mage::getModel('catalog/product')->load( $IDProd );
+        $product = Mage::getModel('catalog/product')->setStoreId($storeID)->load( $IDProd );
         if($product->getIdAnymarket() != ''){
             $HOST = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_host_field', $storeID);
             $TOKEN = Mage::getStoreConfig('anymarket_section/anymarket_acesso_group/anymarket_token_field', $storeID);
@@ -1481,7 +1492,8 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                                         "idProduct" => $IDProdTrans,
                                         "idInClient" => isset($transmission->sku->idInClient) ? $transmission->sku->idInClient : $transmission->sku->partnerId,
                                         "price" => $transmission->sku->price,
-                                        "stockAmount" => $transmission->sku->amount,
+                                        "specialPrice" => ($transmission->sku->price != $transmission->sku->discountPrice) ? $transmission->sku->discountPrice : null,
+                                        "stockAmount"  => $transmission->sku->amount,
                                         "ean" => isset($transmission->sku->ean) ? $transmission->sku->ean : null,
                                         "variations" => $arrVarSku
                                     )
@@ -1505,6 +1517,7 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                                 "idProduct" => $IDProdTrans,
                                 "idInClient" => isset($transmission->sku->idInClient) ? $transmission->sku->idInClient : $transmission->sku->partnerId,
                                 "price" => $transmission->sku->price,
+                                "specialPrice" => ($transmission->sku->price != $transmission->sku->discountPrice) ? $transmission->sku->discountPrice : null,
                                 "stockAmount" => $transmission->sku->amount,
                                 "ean" => isset($transmission->sku->ean) ? $transmission->sku->ean : null,
                                 "variations" => $arrVarSku
@@ -1556,15 +1569,14 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
             }
 
             $typeSincOrder = Mage::getStoreConfig('anymarket_section/anymarket_integration_order_group/anymarket_type_order_sync_field', $storeID);
-            if( $typeSincOrder == 0 ){
+            if( $typeSincOrder == 1 ){
                 if( $transmissionReturn['error'] == '0' ) {
                     $transmissionStock = $transmissionReturn['return'];
-
                     $skuToLoad = isset($transmissionStock->sku->partnerId) ? $transmissionStock->sku->partnerId : $transmissionStock->product->id;
                     $prodLoaded = Mage::getModel('catalog/product')->setStoreId($storeID)->loadByAttribute('sku', $skuToLoad);
                     if ($prodLoaded != null) {
                         $stockItem = Mage::getModel('cataloginventory/stock_item')->loadByProduct($prodLoaded->getId());
-                        if ($stockItem->getManageStock()) {
+                        if( ($stockItem->getManageStock()) && ($stockItem->getData('qty') != $transmissionStock->sku->amount) ) {
                             $stockItem->setData('qty', $transmissionStock->sku->amount);
                             if ($transmissionStock->sku->amount > 0) {
                                 $stockItem->setData('is_in_stock', 1);
@@ -1572,14 +1584,21 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                                 $stockItem->setData('is_in_stock', 0);
                             }
                             $stockItem->save();
-                        }
 
-                        $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
-                        $anymarketlog->setLogDesc( "Stock Updated" );
-                        $anymarketlog->setLogId( $prodLoaded->getSku() );
-                        $anymarketlog->setStatus("0");
-                        $anymarketlog->setStores(array($storeID));
-                        $anymarketlog->save();
+                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                            $anymarketlog->setLogDesc( "Stock Updated: ".$transmissionStock->sku->amount );
+                            $anymarketlog->setLogId( $prodLoaded->getSku() );
+                            $anymarketlog->setStatus("0");
+                            $anymarketlog->setStores(array($storeID));
+                            $anymarketlog->save();
+                        }else{
+                            $anymarketlog = Mage::getModel('db1_anymarket/anymarketlog');
+                            $anymarketlog->setLogDesc( "Estoques iguais." );
+                            $anymarketlog->setLogId( $prodLoaded->getSku() );
+                            $anymarketlog->setStatus("0");
+                            $anymarketlog->setStores(array($storeID));
+                            $anymarketlog->save();
+                        }
 
                         $prodRet = $prodLoaded->getSku()." - Stock Updated";
                     }else{
@@ -1713,6 +1732,9 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
             Mage::app()->getCacheInstance()->cleanType('config');
         }
 
+        $specialToDate = date('Y-m-dTH:i:sZ', strtotime('+5 years'));
+        $specialFromDate = date('Y-m-dTH:i:sZ', strtotime('-1 years'));
+
         $brand =    Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_brand_field', $storeID);
         $nbm   =    Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_nbm_field', $storeID);
         $model =    Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_model_field', $storeID);
@@ -1780,6 +1802,9 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                             'description' => $sku->title,
                             'short_description' => $sku->title,
                             $priceField => $sku->price,
+                            'special_price' => $sku->specialPrice,
+                            'special_to_date'   => $sku->specialPrice != null ? $specialToDate   : null,
+                            'special_from_date' => $sku->specialPrice != null ? $specialFromDate : null,
                             'created_at' => strtotime('now'),
                             'updated_at' => strtotime('now'),
                             'id_anymarket' => $sku->idProduct,
@@ -1844,6 +1869,9 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                         $product->setData('weight', $MassUnit == 1 ? $ProdsJSON->weight*1000 : $ProdsJSON->weight);
 
                         $product->setData($priceField, $sku->price);
+                        $product->setData('special_price', $sku->specialPrice);
+                        $product->setData('special_to_date', $sku->specialPrice != null ? $specialToDate : null);
+                        $product->setData('special_from_date', $sku->specialPrice != null ? $specialFromDate : null);
                         $product->setData($brand, $this->procAttrConfig($brand, $ProdsJSON->brand, 0));
                         $product->setData($model, $this->procAttrConfig($model, $ProdsJSON->model, 0));
                         $product->setData($video_url, $this->procAttrConfig($video_url, $ProdsJSON->videoURL, 0));
@@ -1859,7 +1887,7 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                         $product->setData($warranty_text, $this->procAttrConfig($warranty_text, $ProdsJSON->warranty, 0));
                         $product->setData('id_anymarket', $sku->idProduct);
                         $product->setData('categoria_anymarket', $ProdsJSON->category);
-                        $product->setData('name', $ProdsJSON->title);
+                        $product->setData('name', $sku->title);
                         $product->setStatus(1);
                         $product->save();
 
@@ -1953,8 +1981,8 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                 $anymarketlog->setStores(array($storeID));
                 $anymarketlog->save();
             }
-            // PROD SIMPLES
         }else{
+            // PROD SIMPLES
             foreach ($ProdsJSON->skus as $ProdJSON) {
                 $skuProd = $ProdJSON;
             }
@@ -1982,6 +2010,9 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                     'sku' => $IDSkuJsonProd,
                     'name' => $skuProd->title,
                     $priceField => $skuProd->price,
+                    'special_price' => $skuProd->specialPrice,
+                    'special_to_date'   => $skuProd->specialPrice != null ? $specialToDate   : null,
+                    'special_from_date' => $skuProd->specialPrice != null ? $specialFromDate : null,
                     'created_at' => strtotime('now'),
                     'updated_at' => strtotime('now'),
                     'id_anymarket' => $ProdsJSON->id,
@@ -2068,6 +2099,9 @@ class DB1_AnyMarket_Helper_Product extends DB1_AnyMarket_Helper_Data
                 }
 
                 $product->setData($priceField, $skuProd->price);
+                $product->setData('special_price', $skuProd->specialPrice);
+                $product->setData('special_to_date',   $skuProd->specialPrice != null ? $specialToDate   : null);
+                $product->setData('special_from_date', $skuProd->specialPrice != null ? $specialFromDate : null);
 
                 if( $typeSincOrder == 0 ) {
                     $stockItem = Mage::getModel('cataloginventory/stock_item')->loadByProduct($product);

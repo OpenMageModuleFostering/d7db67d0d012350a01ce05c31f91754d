@@ -120,25 +120,105 @@ class DB1_AnyMarket_Model_Observer {
      * @param $observer
      * @return $this
      */
+    public function saveShippingObs($observer){
+        if (Mage::registry('salesOrderShipmentSaveBeforeTriggered')) {
+            return $this;
+        }
+
+        $shipment = $observer->getEvent()->getShipment();
+        if ($shipment) {
+            $shipped_date = Mage::app()->getRequest()->getParam('shipped_date');
+            $estimated_date = Mage::app()->getRequest()->getParam('estimated_date');
+
+            if ($shipped_date != "" && $estimated_date != ""){
+
+                $comment = 'Informações inseridas pelo Anymarket:<br>';
+                $comment .= '<b>Data de Entrega na Transportadora: </b>' . $shipped_date . '<br>';
+                $comment .= '<b>Data Estimada de Entrega: </b>' . $estimated_date . '<br>';
+
+                $shipment->addComment($comment, "");
+                $shipment->setEmailSent(false);
+            }
+            Mage::register('salesOrderShipmentSaveBeforeTriggered', true);
+        }
+
+        return $this;
+    }
+
+    /**
+     * @param $observer
+     */
+    public function sendOrderAnyMarketObs($observer){
+        $order = new Mage_Sales_Model_Order();
+        $OrderID = Mage::getSingleton('checkout/session')->getLastRealOrderId();
+        $order->loadByIncrementId($OrderID);
+        $storeID = $order->getStoreId();
+
+        $this->prepareOrderForProc($storeID, "INSERT", $order, $OrderID);
+    }
+
+    /**
+     * @param $observer
+     *
+     * @return $this
+     */
     public function updateOrderAnyMarketObs($observer){
-        $storeID = $observer->getEvent()->getOrder()->getStoreId();
-        $OrderID = $observer->getEvent()->getOrder()->getIncrementId();
+        if( $observer->getEvent()->getOrder() ) {
+            $storeID = $observer->getEvent()->getOrder()->getStoreId();
+            $OrderID = $observer->getEvent()->getOrder()->getIncrementId();
+
+            $order = new Mage_Sales_Model_Order();
+            $order->loadByIncrementId($OrderID);
+
+            $this->prepareOrderForProc($storeID, "UPDATE", $order, $OrderID);
+        }
+    }
+
+    /**
+     * @param $observer
+     *
+     * @return $this
+     */
+    public function updateOrInsertOrderAnyMarketObs($observer){
+        if( $observer->getEvent()->getOrder() ) {
+            $storeID = $observer->getEvent()->getOrder()->getStoreId();
+            $OrderID = $observer->getEvent()->getOrder()->getIncrementId();
+
+            $order = new Mage_Sales_Model_Order();
+            $order->loadByIncrementId($OrderID);
+
+            $this->prepareOrderForProc($storeID, "BOTH", $order, $OrderID);
+        }
+    }
+
+    /**
+     * @param $storeID
+     * @param $order
+     * @param $typeProc
+     * @param $OrderID
+     *
+     * @return $this
+     */
+    private function prepareOrderForProc($storeID, $typeProc, $order, $OrderID){
         try {
             if(Mage::registry('order_save_observer_executed_'.$OrderID )){
                 Mage::unregister( 'order_save_observer_executed_'.$OrderID );
                 return $this;
             }
-
             Mage::register('order_save_observer_executed_'.$OrderID, true);
-            $order = $observer->getEvent()->getOrder();
 
             if( $this->asyncMode($storeID) ){
                 Mage::helper('db1_anymarket/queue')->addQueue($storeID, $OrderID, 'EXP', 'ORDER');
             }else{
-                Mage::helper('db1_anymarket/order')->updateOrderAnyMarket($storeID, $order );
+                if( $typeProc == "INSERT" ){
+                    Mage::helper('db1_anymarket/order')->sendOrderToAnyMarket($storeID, $order);
+                }else if( $typeProc == "UPDATE" ){
+                    Mage::helper('db1_anymarket/order')->updateOrderAnymarket($storeID, $order);
+                }else{
+                    Mage::helper('db1_anymarket/order')->updateOrCreateOrderAnyMarket($storeID, $order);
+                }
             }
 
-            //DECREMENTA STOCK ANYMARKET
             $orderItems = $order->getItemsCollection();
             $filter = strtolower(Mage::getStoreConfig('anymarket_section/anymarket_attribute_group/anymarket_preco_field', $storeID));
             foreach ($orderItems as $item){
@@ -152,13 +232,14 @@ class DB1_AnyMarket_Model_Observer {
                     Mage::helper('db1_anymarket/product')->updatePriceStockAnyMarket($storeID, $product_id, $stock->getQty(), $_product->getData($filter));
                 }
             }
+
             Mage::unregister( 'order_save_observer_executed_'.$OrderID );
         } catch (Exception $e) {
             Mage::unregister( 'order_save_observer_executed_'.$OrderID );
             Mage::logException($e);
         }
-
     }
+
 
     /**
      * @param $observer
@@ -176,6 +257,8 @@ class DB1_AnyMarket_Model_Observer {
 
     /**
      * @param $observer
+     *
+     * @return $this
      */
     public function catalogInventorySave($observer){
         $ImportOrderSession = Mage::getSingleton('core/session')->getImportOrdersVariable();
