@@ -1,16 +1,19 @@
 {
-    "name": "OpenMageModuleFostering/d7db67d0d012350a01ce05c31f91754d",
+    "name": "OpenMageModuleFostering\/d7db67d0d012350a01ce05c31f91754d",
     "type": "magento-module",
     "license": "Mozilla-Public-License",
     "homepage": "",
     "description": "Integrador entre Magento e Anymarket.",
     "authors": [
-    {
-        "name": "Anymarket",
-        "email": "dev@anymarket.com.br"
-    }
-],
+        {
+            "name": "Anymarket",
+            "email": "dev@anymarket.com.br"
+        }
+    ],
     "suggest": {
-        "magento-hackathon/magento-composer-installer": "*"
-    }
+        "magento-hackathon\/magento-composer-installer": "*"
+    },
+    "keywords": [
+        "openmage-module"
+    ]
 }
